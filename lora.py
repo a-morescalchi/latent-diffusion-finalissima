@@ -107,7 +107,7 @@ class LoRAConv2dLayer(nn.Module):
         
         # Initialization
         nn.init.kaiming_uniform_(self.lora_A.weight, a=5**0.5)
-        nn.init.zeros_(self.lora_B.weight)
+        nn.init.kaiming_uniform_(self.lora_A.weight, a=5**0.5)
 
     def forward(self, x):
         # 1. Base (Frozen)

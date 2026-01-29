@@ -1,3 +1,4 @@
+from ldm.models.diffusion.ddim import DDIMSampler
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -126,6 +127,9 @@ def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100, rank=4, alpha=4):
 
     loss_history = []
     for epoch in range(EPOCHS):
+        # Add this before the training loop starts
+        print("--- Checking Dataset Statistics ---")
+
         pbar = tqdm(loader, desc=f"Epoch {epoch}")
         for x in pbar:
             x = x.to(DEVICE)
@@ -167,7 +171,7 @@ def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100, rank=4, alpha=4):
             pbar.set_postfix(loss=loss.item())
             loss_history.append(loss.item())
 
-        if (epoch+1) % 10 == 0:
+        if (epoch+1) % 20 == 0:
                 plt.plot(range(len(loss_history)), loss_history)
                 plt.xlabel("Iteration")
                 plt.ylabel("Loss")
@@ -176,10 +180,59 @@ def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100, rank=4, alpha=4):
                 plt.close()
 
 
+        if epoch % 25 == 0:
+            print(f"\n--- Generating Progress Images (Epoch {epoch}) ---")
+            
+            # Switch to eval mode (disables dropout/batchnorm for sampling)
+            model.eval()
+            sampler = DDIMSampler(model)
+            
+            with torch.no_grad():
+                # 1. VISUALIZE INPUT (Ground Truth Check)
+                # We take the latent 'z' from the last training batch and decode it.
+                # If this looks gray/static/black, your dataset loading is BROKEN.
+                # If this looks like Obama, your data is correct.
+                x_rec = model.decode_first_stage(z[:1]) # Decode first image of batch
+                x_rec = torch.clamp((x_rec + 1.0) / 2.0, min=0.0, max=1.0) # Scale to [0, 1]
+                x_rec = x_rec.cpu().numpy().transpose(0, 2, 3, 1)[0] # (H, W, C)
+
+                # 2. VISUALIZE PROGRESS (Generation Check)
+                # We generate a completely new image from random noise
+                shape = z.shape[1:] # e.g. [3, 64, 64]
+                samples, _ = sampler.sample(S=20, batch_size=1, shape=shape, verbose=False)
+                x_gen = model.decode_first_stage(samples)
+                x_gen = torch.clamp((x_gen + 1.0) / 2.0, min=0.0, max=1.0)
+                x_gen = x_gen.cpu().numpy().transpose(0, 2, 3, 1)[0]
+                
+                # 3. DISPLAY
+                fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+                
+                ax[0].imshow(x_rec)
+                ax[0].set_title(f"What the Model Sees\n(Training Input)")
+                ax[0].axis('off')
+                
+                ax[1].imshow(x_gen)
+                ax[1].set_title(f"What the Model Draws\n(Epoch {epoch})")
+                ax[1].axis('off')
+                
+                plt.show()
+                plt.close()
+
+                if epoch % 50 == 0:
+                    # Save LoRA weights only
+                    # You'll need to write logic to save ONLY your lora layers, not the whole model
+                    torch.save(unet.state_dict(), os.path.join(OUTPUT_DIR, f"lora_long_training_epoch_{epoch}.pt"))
+                    print('Weights saved in ', OUTPUT_DIR+f"/lora_epoch_{epoch}.pt")
+            
+            # Switch back to train mode!
+            model.train()
+        
+
+
         # Save LoRA weights only
         # You'll need to write logic to save ONLY your lora layers, not the whole model
         torch.save(unet.state_dict(), os.path.join(OUTPUT_DIR, f"lora_epoch_{epoch}.pt"))
-        if epoch % 10 == 0:
+        if epoch % 20 == 0:
             weight_changes = []
             for name, param in unet.named_parameters():
                 if 'lora' in name and param.requires_grad:
