@@ -61,7 +61,11 @@ def load_model(config_path, ckpt_path):
     model.eval()
     return model
 
-def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100):
+def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100, rank=4, alpha=4):
+    '''
+    BATCH_SIZE, LR, EPOCHS are for training loop
+    rank, alpha are LoRA hyperparameters
+    ''' 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
     # 1. Load the Freeze the Base Model
@@ -81,7 +85,7 @@ def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100):
     # from my_lora_implementation import inject_lora
     # inject_lora(unet, r=4) 
 
-    unet = loraModel(unet, rank=16, alpha=16, qkv=[True, True, True])
+    unet = loraModel(unet, rank=rank, alpha=alpha, qkv=[True, True, True])
     unet.to(DEVICE)
     unet.set_trainable_parameters()
 
