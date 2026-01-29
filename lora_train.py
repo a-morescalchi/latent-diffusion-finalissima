@@ -127,7 +127,6 @@ def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100, rank=4, alpha=4):
     loss_history = []
     for epoch in range(EPOCHS):
         pbar = tqdm(loader, desc=f"Epoch {epoch}")
-        loss_partial = []
         for x in pbar:
             x = x.to(DEVICE)
             
@@ -165,10 +164,17 @@ def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100, rank=4, alpha=4):
                 print("WARNING: No gradients!")
 
             optimizer.step()
-            loss_partial.append(loss.item())
             pbar.set_postfix(loss=loss.item())
+            loss_history.append(loss.item())
 
-        loss_history.append(sum(loss_partial)/len(loss_partial))
+        if (epoch+1) % 10 == 0:
+                plt.plot(range(len(loss_history)), loss_history)
+                plt.xlabel("Iteration")
+                plt.ylabel("Loss")
+                plt.title("Training Loss History")
+                plt.show()
+                plt.close()
+
 
         # Save LoRA weights only
         # You'll need to write logic to save ONLY your lora layers, not the whole model
@@ -187,7 +193,7 @@ def train(BATCH_SIZE = 4, LR = 1e-4, EPOCHS = 100, rank=4, alpha=4):
     torch.save(unet.state_dict(), os.path.join(OUTPUT_DIR, f"lora_final.pt"))
     print('Weights saved in ', OUTPUT_DIR+"/lora_final.pt")
 
-    plt.plot(range(EPOCHS), loss_history)
+    plt.plot(range(len(loss_history)), loss_history)
     plt.xlabel("Iteration")
     plt.ylabel("Loss")
     plt.title("Training Loss History")

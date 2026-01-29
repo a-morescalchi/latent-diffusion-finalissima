@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 from ldm.modules.diffusionmodules.util import checkpoint
-from ldm.modules.diffusionmodules.openaimodel import AttentionBlock, ResBlock
+from ldm.modules.diffusionmodules.openaimodel import AttentionBlock
 import copy
 
 
@@ -41,42 +41,31 @@ class loraAttentionBlock(nn.Module):
         self.qkv = qkv
         self.scaling = alpha / rank
 
+
         # Dimensions from the base layer
         self.channels = base_layer.channels
 
-        # Initialize LoRA layers
+        # Initialize LoRA layers using LowRankConv (since input is image b,c,h,w)
+        
         self.lora_q = LowRankConv1d(self.channels, self.channels, self.rank, zeros=not qkv[0])
         self.lora_k = LowRankConv1d(self.channels, self.channels, self.rank, zeros=not qkv[1])
         self.lora_v = LowRankConv1d(self.channels, self.channels, self.rank, zeros=not qkv[2])
 
         self.lora_proj_out = LowRankConv1d(self.channels, self.channels, self.rank)
 
+
     def forward(self, x):
         b, c, *spatial = x.shape
         x_flat = x.reshape(b, c, -1)
 
-        # 1. Normalization (Applied to BOTH paths)
         x_norm = self.base.norm(x_flat)
-        
-        # 2. Base Path (Frozen)
         base_qkv = self.base.qkv(x_norm)
 
-        # 3. LoRA Path (Trainable)
-        # FIX: Input is now x_norm, not x_flat
-        lora_qkv = torch.cat([
-            self.lora_q(x_norm), 
-            self.lora_k(x_norm), 
-            self.lora_v(x_norm)
-        ], dim=1) * self.scaling
-
-        # 4. Combine & Attend
+        lora_qkv = torch.cat([self.lora_q(x_norm), self.lora_k(x_norm), self.lora_v(x_norm)], dim=1)*self.scaling
         h = self.base.attention(base_qkv + lora_qkv)
-        
-        # 5. Output Projection
-        # h is already the result of attention, so we just project it
-        h_final = self.base.proj_out(h) + self.lora_proj_out(h) * self.scaling
-        
-        return (x_flat + h_final).reshape(b, c, *spatial)
+        h_final = self.base.proj_out(h) + self.lora_proj_out(h)*self.scaling
+        desired_output = (x_flat + h_final).reshape(b, c, *spatial)
+        return desired_output
 
 
 
@@ -180,100 +169,51 @@ def print_trainable_parameters(model):
             
     print(f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param:.4f}")
 
-# Inside your loraModel class (in lora.py)
-
-def inject_lora(model, rank=4, alpha=1):
-    """
-    Injects LoRA into both AttentionBlocks and ResBlocks.
-    """
-    injected = 0
-    for name, module in model.named_modules():
-        
-        # 1. Attention Blocks
-        if isinstance(module, AttentionBlock):
-            # We assume the user wants to wrap the whole block
-            # Note: This replaces the module in-place if we find the parent.
-            # But simpler approach: verify it hasn't been wrapped yet.
-            pass # We rely on wrapping sub-components or the block itself. 
-            # (Your previous logic wrapped the block. Let's stick to your loraAttentionBlock replacement logic)
-            
-    # Re-implementing the robust injection logic:
-    layers_to_replace = []
-    
-    for name, module in model.named_modules():
-        # Target 1: AttentionBlock
-        if isinstance(module, AttentionBlock):
-            if not isinstance(module, loraAttentionBlock):
-                layers_to_replace.append((name, module, "Attention"))
-        
-        # Target 2: ResBlock (Convolutions)
-        elif isinstance(module, ResBlock):
-            # We inject directly into the sub-sequences of ResBlock
-            # ResBlock has: .in_layers (Sequential), .out_layers (Sequential), .skip_connection (Conv2d)
-            
-            # Helper to replace last Conv2d in a Sequential
-            def inject_into_sequential(seq):
-                if len(seq) > 0 and isinstance(seq[-1], nn.Conv2d) and not isinstance(seq[-1], LoRAConv2dLayer):
-                    seq[-1] = LoRAConv2dLayer(seq[-1], rank=rank, alpha=alpha)
-                    return True
-                return False
-
-            if hasattr(module, "in_layers"):
-                if inject_into_sequential(module.in_layers): injected += 1
-            if hasattr(module, "out_layers"):
-                if inject_into_sequential(module.out_layers): injected += 1
-            if hasattr(module, "skip_connection") and isinstance(module.skip_connection, nn.Conv2d):
-                 module.skip_connection = LoRAConv2dLayer(module.skip_connection, rank=rank, alpha=alpha)
-                 injected += 1
-
-    # Apply Attention replacements
-    for full_name, old_layer, type_name in layers_to_replace:
-        if '.' in full_name:
-            parent_name, child_name = full_name.rsplit('.', 1)
-            parent_module = model.get_submodule(parent_name)
-        else:
-            parent_name, child_name = "", full_name
-            parent_module = model
-            
-        if type_name == "Attention":
-            print(f"Injecting LoRA into Attention: {full_name}")
-            new_layer = loraAttentionBlock(old_layer, rank=rank, alpha=alpha)
-            setattr(parent_module, child_name, new_layer)
-            injected += 1
-
-    print(f"Total LoRA Layers Injected: {injected}")
-    return model
-
-def print_trainable_parameters(model):
-    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total = sum(p.numel() for p in model.parameters())
-    print(f"trainable params: {trainable} || all params: {total} || trainable%: {100 * trainable / total:.4f}")
-
 
 
 class loraModel(nn.Module):
-    def __init__(self, base_model, rank=4, alpha=1, qkv=[True, True, True]):
+    def __init__(self, base_model, rank = 4, alpha=1, qkv=[True, False, True], targets=available_targets):
         super().__init__()
-        # Use the new inject_lora function
-        self.model = inject_lora(base_model, rank=rank, alpha=alpha)
+        
+        self.model = ignorant_lora(base_model, rank=rank, alpha=alpha, qkv=qkv, target_class=targets)
 
     def forward(self, x, t=None, **kwargs):
         return self.model(x, t, **kwargs)
 
     def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.model, name)
+            try:
+                # 1. First, let PyTorch find standard attributes (like self.model, parameters, etc.)
+                return super().__getattr__(name)
+            except AttributeError:
+                # 2. If PyTorch doesn't have it, ONLY THEN check the wrapped model
+                return getattr(self.model, name)
 
     def set_trainable_parameters(self):
+        '''
+        Sets parameters of the adapters and of the head to requires_grad=True, all other parameters to False
+        '''
         for name, param in self.model.named_parameters():
             if 'lora' in name:
                 param.requires_grad = True
             else:
                 param.requires_grad = False
+
         print_trainable_parameters(self.model)
 
-    def state_dict(self, destination=None, prefix='', keep_vars=False):
-        full_sd = self.model.state_dict(destination, prefix, keep_vars)
-        return {k: v for k, v in full_sd.items() if "lora" in k}
+
+    def state_dict(self, destination=None, prefix='', keep_vars=False, print_percentage=False):
+        """
+        override of the classical state_dict method, only shows trainable parameters
+        """
+        full_state_dict = self.model.state_dict(destination, prefix, keep_vars)
+        
+        filtered_dict = {
+            k: v for k, v in full_state_dict.items() 
+            if f"{k}" in [n for n, p in self.model.named_parameters() if p.requires_grad]
+        }
+        
+        if print_percentage:
+            print_trainable_parameters(self.model)
+        return filtered_dict
+
+
