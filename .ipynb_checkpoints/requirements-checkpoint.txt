@@ -1,0 +1,27 @@
+# --- Core Deep Learning & Math (Required by algo.py) ---
+torch>=2.0.0
+torchvision
+torchaudio
+numpy
+scipy
+
+# --- Diffusion & Models (Required by desperados.py & lora_train.py) ---
+diffusers
+transformers
+accelerate
+safetensors
+omegaconf
+einops
+
+# --- Data Processing & Visualization (Required by datasets & notebooks) ---
+Pillow
+matplotlib
+tqdm
+datasets
+pandas
+imageio
+imageio-ffmpeg
+
+# --- Optional/Utility (Often used in LoRA training scripts) ---
+fire
+bitsandbytes
