@@ -47,6 +47,7 @@ def get_parser(**parser_kwargs):
     parser.add_argument("--log_freq", type=int, default=100, help="log every N steps")
     parser.add_argument("--device", type=str, default="cuda", help="device to use")
     parser.add_argument("--accumulate_grad_batches", type=int, default=1, help="accumulate gradients")
+    parser.add_argument("--lora_path", type=str, default="", help="path to LoRA weights if for continued training")
     
     return parser
 
@@ -336,6 +337,19 @@ if __name__ == "__main__":
     old_unet = model.model.diffusion_model
     unet = loraModel(old_unet, rank=16, alpha=64, qkv=[True, True, True])
     unet.set_trainable_parameters()
+
+    #!!!! careful, untested
+
+    if opt.lora_path:
+        print(f"Loading LoRA weights from {opt.lora_path}")
+        lora_checkpoint = torch.load(opt.lora_path, map_location='cpu')
+        if 'state_dict' in lora_checkpoint:
+            lora_state_dict = lora_checkpoint['state_dict']
+        else:
+            lora_state_dict = lora_checkpoint
+        
+        unet.load_state_dict(lora_state_dict, strict=False)
+        print("LoRA weights loaded successfully.")
 
     model.model.diffusion_model = unet
     model = model.to(device)
