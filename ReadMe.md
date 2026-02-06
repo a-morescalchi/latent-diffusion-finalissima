@@ -35,9 +35,11 @@ pip -r requirements.txt
 
 !!! the repo must be renamed latent-diffusion once downloaded, otherwise the code might not work.
 
+Just for visualizing results: 
+
 Relevant notebooks: desperados.ipynb, despainting.py
 
-
+The thing will become more systematic before this evening...
 
 ## 6. Citations
 
