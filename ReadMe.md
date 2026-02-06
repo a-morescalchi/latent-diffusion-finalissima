@@ -33,8 +33,9 @@ pip -r requirements.txt
 
 # Usage
 
-The code is run through algo.ipynb. In desperados.ipynb the reader may find some basic demostrations of sampling from the trained lora. 
-LoRA weights are in the repo, while the base model's weights get automatically downloaded in the notebook. 
+!!! the repo must be renamed latent-diffusion once downloaded, otherwise the code might not work.
+
+Relevant notebooks: desperados.ipynb, despainting.py
 
 
 
