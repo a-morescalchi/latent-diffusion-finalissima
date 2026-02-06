@@ -72,7 +72,7 @@ data:
     batch_size: 1
     wrap: true
     train:
-      target: "/home/onyxia/work/latent-diffusion/loraimgs"
+      target: "/content/drive/MyDrive/Ricerca/latent-diffusion/loraimgs"
       params:
         size: 256
         crop_size: 128

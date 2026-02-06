@@ -14,9 +14,9 @@ from ldm.util import instantiate_from_config
 from lora_train_dataset import LoRADataset
 from lora import loraModel
 
-# --- Configuration ---
-CONFIG_PATH = "configs/latent-diffusion/celebahq-ldm-vq-4.yaml" # Check this path!
-CKPT_PATH = "celeba/model.ckpt" # Check this path!
+
+CONFIG_PATH = "configs/latent-diffusion/celebahq-ldm-vq-4.yaml"
+CKPT_PATH = "celeba/model.ckpt"
 OUTPUT_DIR = "lora_checkpoints"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

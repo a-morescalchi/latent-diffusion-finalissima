@@ -154,27 +154,18 @@ class Trainer:
         
         for batch_idx, batch in enumerate(progress_bar):
             # Move batch to device
-            """
             if isinstance(batch, dict):
                 batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                         for k, v in batch.items()}
             elif isinstance(batch, (list, tuple)):
                 batch = [b.to(self.device) if isinstance(b, torch.Tensor) else b for b in batch]
             else:
-                batch = batch.to(self.device)"""
+                batch = batch.to(self.device)
 
-            with torch.no_grad():
-                c = model.cond_stage_model.encode(batch["masked_image"].permute(0,3,1,2))
-                cc = torch.nn.functional.interpolate(batch["mask"].permute(0,3,1,2),
-                                                     size=c.shape[-2:])[:,:1]
-                print(c.shape,cc.shape)
-                c = torch.cat((c, cc), dim=1).to(device)
-    
-                x = model.cond_stage_model.encode(batch["image"].permute(0,3,1,2)).to(device)
             
             
             # Forward pass
-            loss_dict = self.model(x,c)
+            loss_dict = self.model.training_step(batch,batch_idx)
             
             if isinstance(loss_dict, dict):
                 loss = loss_dict.get('loss', loss_dict.get('train/loss', None))
@@ -233,7 +224,7 @@ class Trainer:
                 print(f"Epoch {epoch} - Val Loss: {val_loss:.4f}")
             
             # Save checkpoint
-            if (epoch + 1) % self.save_freq == 0:
+            if (epoch + 1) % self.save_freq == 0 and epoch > self.current_epoch:
                 save_checkpoint(self.model, self.optimizer, epoch, self.global_step, 
                               self.logdir, f"epoch_{epoch:06d}.ckpt")
             

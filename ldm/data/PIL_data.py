@@ -145,7 +145,8 @@ class InpaintingTrain_ldm(Dataset):
         self.mask_list = []
         
         for mask in os.listdir(data_root+"/masks"):
-            self.mask_list.append(mask)
+            if mask[0] == 'm':
+                self.mask_list.append(mask)
 
                     
     def __len__(self):

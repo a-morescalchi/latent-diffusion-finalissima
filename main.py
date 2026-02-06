@@ -15,6 +15,7 @@ from tqdm import tqdm
 sys.path.append(os.getcwd() + "/ldm")
 from ldm.util import instantiate_from_config
 from ldm.data import PIL_data
+from lora import loraModel
 
 
 def get_parser(**parser_kwargs):
@@ -41,13 +42,30 @@ def get_parser(**parser_kwargs):
     parser.add_argument("-l", "--logdir", type=str, default="logs", help="directory for logging")
     parser.add_argument("--scale_lr", type=str2bool, nargs="?", const=True, default=True, help="scale base-lr by ngpu * batch_size * n_accumulate")
     parser.add_argument("--stage", type=str, default="0", help="training stage")
-    parser.add_argument("--epochs", type=int, default=100, help="number of epochs")
-    parser.add_argument("--save_freq", type=int, default=5, help="save checkpoint every N epochs")
+    parser.add_argument("--epochs", type=int, default=90, help="number of epochs")
+    parser.add_argument("--save_freq", type=int, default=30, help="save checkpoint every N epochs")
     parser.add_argument("--log_freq", type=int, default=100, help="log every N steps")
     parser.add_argument("--device", type=str, default="cuda", help="device to use")
     parser.add_argument("--accumulate_grad_batches", type=int, default=1, help="accumulate gradients")
     
     return parser
+
+
+def new_set_trainable_parameters(model):
+    """Set requires_grad for model parameters based on their names"""
+    for name, param in model.named_parameters():
+        if "lora" in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
+
+def filtered_state_dict(model):
+    """Filter out non-trainable parameters from state dict"""
+    state_dict = model.state_dict()
+    filtered_dict = {k: v for k, v in state_dict.items() if "lora" in k}
+    return filtered_dict
+
 
 
 def seed_everything(seed):
@@ -63,14 +81,18 @@ def save_checkpoint(model, optimizer, epoch, step, logdir, filename="checkpoint.
     """Save model checkpoint"""
     ckpt_path = os.path.join(logdir, "checkpoints", filename)
     os.makedirs(os.path.dirname(ckpt_path), exist_ok=True)
+
+    print(len(filtered_state_dict(model)))
+    new_set_trainable_parameters(model)
     
     checkpoint = {
         'epoch': epoch,
         'global_step': step,
-        'state_dict': model.state_dict(),
+        'state_dict': filtered_state_dict(model),
         'optimizer': optimizer.state_dict(),
     }
     
+
     torch.save(checkpoint, ckpt_path)
     print(f"Checkpoint saved to {ckpt_path}")
     return ckpt_path
@@ -85,25 +107,18 @@ def load_checkpoint(model, optimizer, ckpt_path):
     print(f"Loading checkpoint from {ckpt_path}")
     checkpoint = torch.load(ckpt_path, map_location='cpu')
     
-    # Load state dict
+
     if 'state_dict' in checkpoint:
         state_dict = checkpoint['state_dict']
     else:
         state_dict = checkpoint
     
-    # Remove DDIM buffers if present
+
     ddim_keys = [k for k in state_dict.keys() if k.startswith('ddim_')]
     for key in ddim_keys:
         state_dict.pop(key, None)
     
     model.load_state_dict(state_dict, strict=False)
-    
-    # Load optimizer state
-    if optimizer is not None and 'optimizer' in checkpoint:
-        try:
-            optimizer.load_state_dict(checkpoint['optimizer'])
-        except:
-            print("Could not load optimizer state")
     
     epoch = checkpoint.get('epoch', 0)
     global_step = checkpoint.get('global_step', 0)
@@ -140,7 +155,6 @@ class Trainer:
         self.global_step = 0
         self.current_epoch = 0
         
-        # Create log directories
         os.makedirs(os.path.join(logdir, "checkpoints"), exist_ok=True)
         os.makedirs(os.path.join(logdir, "images"), exist_ok=True)
         
@@ -153,47 +167,30 @@ class Trainer:
         progress_bar = tqdm(dataloader, desc=f"Epoch {self.current_epoch}")
         
         for batch_idx, batch in enumerate(progress_bar):
-            # Move batch to device
-            """
             if isinstance(batch, dict):
                 batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                         for k, v in batch.items()}
             elif isinstance(batch, (list, tuple)):
                 batch = [b.to(self.device) if isinstance(b, torch.Tensor) else b for b in batch]
             else:
-                batch = batch.to(self.device)"""
+                batch = batch.to(self.device)
 
-            with torch.no_grad():
-                c = model.cond_stage_model.encode(batch["masked_image"].permute(0,3,1,2))
-                cc = torch.nn.functional.interpolate(batch["mask"].permute(0,3,1,2),
-                                                     size=c.shape[-2:])[:,:1]
-                print(c.shape,cc.shape)
-                c = torch.cat((c, cc), dim=1).to(device)
-    
-                x = model.cond_stage_model.encode(batch["image"].permute(0,3,1,2)).to(device)
-            
-            
-            # Forward pass
-            loss_dict = self.model(x,c)
+            loss_dict = self.model.training_step(batch,batch_idx)
             
             if isinstance(loss_dict, dict):
                 loss = loss_dict.get('loss', loss_dict.get('train/loss', None))
             else:
                 loss = loss_dict
             
-            # Normalize loss for gradient accumulation
             loss = loss / self.accumulate_grad_batches
-            
-            # Backward pass
+
             loss.backward()
-            
-            # Update weights
+
             if (batch_idx + 1) % self.accumulate_grad_batches == 0:
                 self.optimizer.step()
                 self.optimizer.zero_grad()
                 self.global_step += 1
-            
-            # Logging
+
             epoch_loss += loss.item() * self.accumulate_grad_batches
             
             if self.global_step % self.log_freq == 0:
@@ -223,21 +220,21 @@ class Trainer:
         for epoch in range(self.current_epoch, num_epochs):
             self.current_epoch = epoch
             
-            # Training
+
             train_loss = self.train_epoch(train_dataloader)
             print(f"Epoch {epoch} - Train Loss: {train_loss:.4f}")
             
-            # Validation (if provided)
+
             if val_dataloader is not None:
                 val_loss = self.validate(val_dataloader)
                 print(f"Epoch {epoch} - Val Loss: {val_loss:.4f}")
             
-            # Save checkpoint
-            if (epoch + 1) % self.save_freq == 0:
+
+            if (self.current_epoch + 1) % self.save_freq == 0:
                 save_checkpoint(self.model, self.optimizer, epoch, self.global_step, 
                               self.logdir, f"epoch_{epoch:06d}.ckpt")
             
-            # Always save last checkpoint
+
             save_checkpoint(self.model, self.optimizer, epoch, self.global_step, 
                           self.logdir, "last.ckpt")
     
@@ -249,7 +246,7 @@ class Trainer:
         
         with torch.no_grad():
             for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
-                # Move batch to device
+
                 if isinstance(batch, dict):
                     batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
                             for k, v in batch.items()}
@@ -258,7 +255,7 @@ class Trainer:
                 else:
                     batch = batch.to(self.device)
                 
-                # Forward pass
+
                 loss_dict = self.model(batch)
                 
                 if isinstance(loss_dict, dict):
@@ -273,11 +270,11 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    # Parse arguments
+
     parser = get_parser()
     opt, unknown = parser.parse_known_args()
     
-    # Set up logging directory
+
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     
     if opt.name:
@@ -298,29 +295,52 @@ if __name__ == "__main__":
     os.makedirs(ckptdir, exist_ok=True)
     os.makedirs(cfgdir, exist_ok=True)
     
-    # Set seed
+
     seed_everything(opt.seed)
     
-    # Load config
+
     configs = [OmegaConf.load(cfg) for cfg in opt.base]
     cli = OmegaConf.from_dotlist(unknown)
     config = OmegaConf.merge(*configs, cli)
     
-    # Save config
+
     print("Config:")
     print(OmegaConf.to_yaml(config))
     OmegaConf.save(config, os.path.join(cfgdir, f"{now}-config.yaml"))
     
-    # Device setup
+
     device = torch.device(opt.device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
-    # Initialize model
+
+
     print("Initializing model...")
     model = instantiate_from_config(config.model)
+
+
+    print(f"Loading checkpoint SPERIAMO from {opt.resume}")
+    checkpoint = torch.load(opt.resume, map_location='cpu')
+
+
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+    
+    ddim_keys = [k for k in state_dict.keys() if k.startswith('ddim_')]
+    for key in ddim_keys:
+        state_dict.pop(key, None)
+    
+    model.load_state_dict(state_dict, strict=False)
+
+
+    old_unet = model.model.diffusion_model
+    unet = loraModel(old_unet, rank=16, alpha=64, qkv=[True, True, True])
+    unet.set_trainable_parameters()
+
+    model.model.diffusion_model = unet
     model = model.to(device)
     
-    # Initialize optimizer
+
     base_lr = config.model.base_learning_rate
     batch_size = config.data.params.batch_size
     
@@ -331,16 +351,15 @@ if __name__ == "__main__":
         lr = base_lr
         print(f"Base learning rate: {lr:.2e}")
     
-    # Use AdamW optimizer (common choice)
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, betas=(0.9, 0.999), weight_decay=0.01)
     
-    # Load checkpoint if resuming
     start_epoch = 0
     global_step = 0
-    if opt.resume:
-        start_epoch, global_step = load_checkpoint(model, optimizer, opt.resume)
+
+    #if opt.resume:
+    #    start_epoch, global_step = load_checkpoint(model, optimizer, opt.resume)
     
-    # Set up data
     img_size = config.data.params.train.params.size
     path = config.data.params.train.target
     
@@ -362,8 +381,8 @@ if __name__ == "__main__":
     
     print(f"Dataset size: {len(dataset)}")
     print(f"Batches per epoch: {len(train_dataloader)}")
-    
-    # Initialize trainer
+
+
     trainer = Trainer(
         model=model,
         optimizer=optimizer,
@@ -377,7 +396,6 @@ if __name__ == "__main__":
     trainer.global_step = global_step
     trainer.current_epoch = start_epoch
     
-    # Training
     if opt.train:
         print("Starting training...")
         try:
